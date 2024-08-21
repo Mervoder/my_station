@@ -190,6 +190,7 @@ void NEXTION_SendString (char *ID, char *string);
 void NEXTION_SendNum (char *obj, int32_t num);
 void NEXTION_SendFloat (char *obj, float num, int dp);
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
+void Payload_union_converter(void);
 
 int8_t user_i2c_read(uint8_t id, uint8_t reg_addr, uint8_t *data, uint16_t len);
 int8_t user_i2c_write(uint8_t id, uint8_t reg_addr, uint8_t *data, uint16_t len);
@@ -485,6 +486,24 @@ int main(void)
 //			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, RESET);
 
 	  }
+	    else if(Lora_Rx_Buffer[0]==3 && Lora_Rx_Buffer[47]==0x33)
+		  {
+
+		  Payload.satsinview=Lora_Rx_Buffer[1];
+
+		  Payload_union_converter();
+
+		  Payload.battery=Lora_Rx_Buffer[46];
+		  Payload.mod=Lora_Rx_Buffer[70];
+		  Payload.communication=Lora_Rx_Buffer[48];
+	        // payload ekran
+
+		  }
+
+
+
+
+
 
 	  if(flag_adc_cnt >=10 && flag_adc ==1)
 	  	  {
@@ -1355,7 +1374,86 @@ void Sustainer_union_converter(void)
 					  Sustainer.pitch=f2u8_pitch.fVal;
 
 }
+void Payload_union_converter(void)
+{
+	 float2unit8 f2u8;
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+2];
+				 HYI_BUFFER[22+i]=Lora_Rx_Buffer[i+5]; // 34 35 36 37
+			 }
+			 Payload.gpsaltitude=f2u8.fVal;
 
+
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+6];
+				 HYI_BUFFER[26+i]=Lora_Rx_Buffer[i+9]; // 38 39 40 41
+			 }
+			 Payload.gpslatitude=f2u8.fVal;
+
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+10];
+				 HYI_BUFFER[30+i]=Lora_Rx_Buffer[i+13]; // 42 43 44 45
+			 }
+			 Payload.gpslongitude=f2u8.fVal;
+
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+14];
+			 }
+			 Payload.altitude=f2u8.fVal;
+
+
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+18];
+			 }
+			 Payload.speed=f2u8.fVal;
+
+
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+22];
+			 }
+			 Payload.temperature=f2u8.fVal;
+
+
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+26];
+			 }
+			 Payload.accx=f2u8.fVal;
+
+
+			 for(uint8_t i=0;i<4;i++)
+			 {
+				 f2u8.array[i]=Lora_Rx_Buffer[i+30];
+			 }
+			 Payload.accy=f2u8.fVal;
+
+
+		      for(uint8_t i=0;i<4;i++)
+			 {
+		    	  f2u8.array[i]=Lora_Rx_Buffer[i+34];
+			 }
+		      Payload.accz=f2u8.fVal;
+
+
+			  for(uint8_t i=0;i<4;i++)
+			 {
+				  f2u8.array[i]=Lora_Rx_Buffer[i+38];
+			 }
+			  Payload.normal=f2u8.fVal;
+
+
+			  for(uint8_t i=0;i<4;i++)
+			 {
+				  f2u8.array[i]=Lora_Rx_Buffer[i+42];
+			 }
+			  Payload.pitch=f2u8.fVal;
+}
 
 
 /* USER CODE END 4 */
