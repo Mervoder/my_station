@@ -35,6 +35,12 @@
 
 #define TAKIM_ID 31
 
+#define PACKET_SIZE 72   // Toplam paket boyutu (47 data + 1 '\n')
+#define PACKET1_ID 2     // 1. paketin 0. indeksindeki ID
+#define PACKET2_ID 1     // 2. paketin 0. indeksindeki ID
+#define PACKET1_MARKER 0x31 // 1. paketin 47. indeksindeki işaretleyici
+#define PACKET2_MARKER 0x32 // 2. paketin 47. indeksindeki işaretleyici
+#define PACKET_END '\n'   // Paketlerin sonundaki karakter
 
 #define CMD_SET_REG 0xC0 // COMMAND FOR SETTING REGISTER
 #define CMD_READ_REG 0xC1 // COMMAND FOR READING REGISTER
@@ -75,6 +81,7 @@ DMA_HandleTypeDef hdma_usart3_rx;
 
 /* USER CODE BEGIN PV */
 uint8_t Lora_Rx_Buffer[Lora_Rx_Buffer_SIZE],
+		Lora_Control_Buffer[Lora_Rx_Buffer_SIZE],
 		HYI_BUFFER[HYI_BUFFER_SIZE];
 
 uint8_t rx_buffer_gps[RX_BUFFER_SIZE]	;
@@ -191,6 +198,7 @@ void NEXTION_SendNum (char *obj, int32_t num);
 void NEXTION_SendFloat (char *obj, float num, int dp);
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
 void Payload_union_converter(void);
+void correct_packet(uint8_t *buffer, int buffer_size);
 
 int8_t user_i2c_read(uint8_t id, uint8_t reg_addr, uint8_t *data, uint16_t len);
 int8_t user_i2c_write(uint8_t id, uint8_t reg_addr, uint8_t *data, uint16_t len);
@@ -327,7 +335,7 @@ int main(void)
   HAL_ADC_Start_IT(&hadc1);
 
   //HAL_UART_Receive_IT(&huart3, &rx_data_lora, 1);
-  HAL_UART_Receive_DMA(&huart3, Lora_Rx_Buffer, 72);
+  HAL_UART_Receive_DMA(&huart3, Lora_Control_Buffer, 72);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -486,7 +494,7 @@ int main(void)
 //			HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, RESET);
 
 	  }
-	    else if(Lora_Rx_Buffer[0]==3 && Lora_Rx_Buffer[47]==0x33)
+	  if(Lora_Rx_Buffer[0]==3 && Lora_Rx_Buffer[47]==0x33)
 		  {
 
 		  Payload.satsinview=Lora_Rx_Buffer[1];
@@ -497,6 +505,20 @@ int main(void)
 		  Payload.mod=Lora_Rx_Buffer[70];
 		  Payload.communication=Lora_Rx_Buffer[48];
 	        // payload ekran
+
+			sprintf(p_altitude,"%4.2f",Payload.altitude);
+			sprintf(p_latitude,"%2.6f",Payload.gpslatitude);
+			sprintf(p_gpsaltitude,"%4.2f",Payload.gpsaltitude);
+			sprintf(p_longitude,"%2.6f",Payload.gpslongitude);
+			sprintf(p_bat,"%2d",Payload.battery);
+
+			NEXTION_SendString("vp1", p_latitude);
+			NEXTION_SendString("vp2", p_longitude);
+			NEXTION_SendString("vp3", p_gpsaltitude);
+			NEXTION_SendString("vp4", p_altitude);
+			NEXTION_SendString("vp5", p_bat);
+
+
 
 		  }
 
@@ -1088,9 +1110,34 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 //			rx_index_lora=0;
 //
 //			}
-//		HAL_UART_Receive_IT(&huart3, &rx_data_lora, 1);
+		//HAL_UART_Receive_IT(&huart3, &rx_data_lora, 1);
 
-		 HAL_UART_Receive_DMA(&huart3, Lora_Rx_Buffer, 72);
+				if((Lora_Control_Buffer[0] != 1 &&Lora_Control_Buffer[47] != 50) && (Lora_Control_Buffer[0] != 2 &&Lora_Control_Buffer[47] != 49)&& (Lora_Control_Buffer[0] != 3 &&Lora_Control_Buffer[47] != 0x33))
+				{
+					//memcpy(Lora_Rx_Buffer,Lora_Control_Buffer, Lora_Rx_Buffer_SIZE);
+					correct_packet(Lora_Control_Buffer,Lora_Rx_Buffer_SIZE);
+		//			HAL_UART_DMAStop(&huart3);
+				//	HAL_Delay(1000);
+				//	HAL_UART_Receive_DMA(&huart3, Lora_Control_Buffer, 72);
+				}
+//				else
+//				{
+//					for(int i =0; i<20;i++)
+//					{
+//						Lora_Rx_Buffer[i+53] =Lora_Control_Buffer[i+53];
+//					}
+//					for(int i =0; i<52;i++)
+//					{
+//						Lora_Rx_Buffer[i+20] =Lora_Control_Buffer[i+20];
+//					}
+					memcpy(Lora_Rx_Buffer , Lora_Control_Buffer , Lora_Rx_Buffer_SIZE);
+					HAL_UART_Receive_DMA(&huart3, Lora_Control_Buffer, 72);
+
+//				}
+
+			//}
+
+
 		}
 
 }
@@ -1102,6 +1149,34 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 		adc= HAL_ADC_GetValue(&hadc1);
 		flag_adc=1;
 	}
+}
+
+
+
+void correct_packet(uint8_t *buffer, int buffer_size) {
+	  int start_index = -1;
+
+	// Paketlerin başlangıcını tespit et
+	for (int i = 0; i < buffer_size; i++) {
+		if ((buffer[i] == PACKET1_ID && buffer[(i + 47) % buffer_size] == PACKET1_MARKER && buffer[(i + 71) % buffer_size] == PACKET_END) ||
+			(buffer[i] == PACKET2_ID && buffer[(i + 47) % buffer_size] == PACKET2_MARKER && buffer[(i + 71) % buffer_size] == PACKET_END)) {
+			start_index = i;
+			break;
+		}
+	}
+
+	// Eğer başlangıç bulunduysa ve başta değilse buffer'ı düzelt
+	if (start_index > 0) {
+		uint8_t temp_buffer[buffer_size];
+
+		// Buffer'daki doğru veriyi temp_buffer'a kopyala
+		memcpy(temp_buffer, &buffer[start_index], buffer_size - start_index);
+		memcpy(&temp_buffer[buffer_size - start_index], buffer, start_index);
+
+		// Düzeltilmiş veriyi orijinal buffer'a kopyala
+		memcpy(buffer, temp_buffer, buffer_size);
+	}
+
 }
 
 int8_t E220_write_register(uint8_t reg,uint8_t parameter)
