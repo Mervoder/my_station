@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -31,7 +32,7 @@
 /* USER CODE BEGIN PTD */
 #define Lora_Rx_Buffer_SIZE 72
 #define RX_BUFFER_SIZE 128
-#define HYI_BUFFER_SIZE 78
+#define HYI_BUFFER_SIZE 68
 
 #define TAKIM_ID 31
 
@@ -86,9 +87,10 @@ uint8_t Lora_Rx_Buffer[Lora_Rx_Buffer_SIZE],
 
 uint8_t rx_buffer_gps[RX_BUFFER_SIZE]	;
 
-uint8_t rx_data_lora=0;
+uint8_t rx_data_lora=0,
+		rx_data_gps;
 
-uint8_t rs_index=0,
+uint8_t rx_index_gps=0,
 		rx_index_lora=0;
 
 uint8_t flag_lora ,
@@ -98,7 +100,8 @@ uint8_t flag_lora ,
 		flag_counter,
 		flag_adc_cnt,
 		flag_adc,
-		flag_median;
+		flag_median,
+		flag_hyi;
 
 uint8_t Cmd_End[3] = {0xff,0xff,0xff};
 uint8_t nextion_rx_data[5];
@@ -107,7 +110,14 @@ const uint8_t EGU_durum_sorgusu[5]={0x54,0x52,0x35,0x0D,0x0A};
 const uint8_t EGU_motor_atesleme[5]={0x54,0x52,0x32,0x0D,0x0A};
 
 int time;
-float adc , adc_pil_val;
+float adc , adc_pil_val , s_distance, bs_distance;
+
+const double PI = 4.0*atan(1.0);
+const double radius_of_earth = 6378136.0474;
+double _distance=0;
+double _angle=0;
+
+uint32_t crc;
 
 //egu
 uint8_t EGU_ARIZA=0;
@@ -190,15 +200,19 @@ static void MX_TIM4_Init(void);
 void union_converter();
 void Booster_union_converter();
 void Sustainer_union_converter();
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
 void Nextion_SendCommand(char* command);
 void Nextion_SendFloatToTextbox(char* textbox_id, float value);
 void NEXTION_SendString (char *ID, char *string);
 void NEXTION_SendNum (char *obj, int32_t num);
 void NEXTION_SendFloat (char *obj, float num, int dp);
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc);
 void Payload_union_converter(void);
 void correct_packet(uint8_t *buffer, int buffer_size);
+void HYI_BUFFER_Fill();
+
 
 int8_t user_i2c_read(uint8_t id, uint8_t reg_addr, uint8_t *data, uint16_t len);
 int8_t user_i2c_write(uint8_t id, uint8_t reg_addr, uint8_t *data, uint16_t len);
@@ -206,7 +220,11 @@ int8_t E220_read_register(uint8_t reg);
 int8_t E220_write_register(uint8_t reg,uint8_t parameter);
 
 float BME280_Get_Altitude(void);
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
+
+double distance_in_m(double lat1, double long1, double lat2, double long2);
+double toRadians(double degree);
+double calculateAngle(double lat1, double lon1, double lat2, double lon2);
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -290,6 +308,7 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
 
   HAL_Delay(100);
@@ -335,7 +354,10 @@ int main(void)
   HAL_ADC_Start_IT(&hadc1);
 
   //HAL_UART_Receive_IT(&huart3, &rx_data_lora, 1);
+  HAL_UART_Receive_IT(&huart2, &rx_data_gps, 1);
   HAL_UART_Receive_DMA(&huart3, Lora_Control_Buffer, 72);
+
+  HYI_BUFFER_Fill();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -358,6 +380,7 @@ int main(void)
 	  			 //EGU PART
 	  			 EGU_ARIZA=Lora_Rx_Buffer[49];
 	  			 EGU_AYRILMA_TESPIT=Lora_Rx_Buffer[50];
+	  			HYI_BUFFER[74]= EGU_AYRILMA_TESPIT;//EGU_AYRILMA_TESPIT;
 
 	  			 float2unit8 f2u8_EGU_BATTERY;
 	  			for(uint8_t i=0;i<4;i++)
@@ -522,9 +545,13 @@ int main(void)
 
 		  }
 
+/*************************************************************************************************/
 
-
-
+	  if(flag_hyi ==2)
+	  {
+		  HYI_BUFFER_Fill();
+	      flag_hyi=0;
+	  }
 
 
 	  if(flag_adc_cnt >=10 && flag_adc ==1)
@@ -536,11 +563,22 @@ int main(void)
 	  		  adc_pil_val=(float)( ( ( (adc/4095)*3.3)-1.41) / (1.99-1.41) ) *100 ;
 	  		 // adc_pil_val = (adc-1755)/(2746-1755)*100;
 
-	      	sprintf(st_bat,"%2d",(uint8_t)adc_pil_val);
-	      	NEXTION_SendString("t54", st_bat);
+	  		  s_distance=distance_in_m(gps.latitude,gps.longitude,Sustainer.gpslatitude,Sustainer.gpslongitude);
+	  		  bs_distance=distance_in_m(gps.latitude,gps.longitude,Booster.gpslatitude,Booster.gpslongitude);
 
-	  		flag_adc=0;
-	  		flag_adc_cnt=0;
+			  sprintf(s_dist,"%4.2f",s_distance);
+			  NEXTION_SendString("t", s_dist);
+
+			  sprintf(b_dist,"%4.2f",bs_distance);
+			  NEXTION_SendString("t17", b_dist);
+
+	  		  sprintf(st_bat,"%2d",(uint8_t)adc_pil_val);
+	  		  NEXTION_SendString("t54", st_bat);
+
+
+	  		  flag_adc=0;
+	  		  flag_adc_cnt=0;
+	  		  HAL_ADC_Start_IT(&hadc1);
 	  	  }
 
   }
@@ -569,9 +607,9 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 84;
+  RCC_OscInitStruct.PLL.PLLN = 168;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
-  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLQ = 7;
   RCC_OscInitStruct.PLL.PLLR = 2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
@@ -583,7 +621,7 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV2;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
@@ -1061,8 +1099,11 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	{
 		flag_lora=1;
 
+		flag_hyi++;
+		if(flag_hyi >=3)flag_hyi=0;
+
 		flag_adc_cnt++;
-		if(flag_adc_cnt >=11) flag_adc_cnt=0;
+		if(flag_adc_cnt >=12) flag_adc_cnt=0;
 	}
 
 	if(htim==&htim3)// sensor timer 30ms
@@ -1088,16 +1129,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-//	if(huart==&huart2){
-//	if(rx_data_gps != '\n' && rx_index_gps < RX_BUFFER_SIZE) {
-//		rx_buffer_gps[rx_index_gps++] = rx_data_gps;
-//	} else {
-//		lwgps_process(&gps, rx_buffer_gps, rx_index_gps+1);
-//		rx_index_gps = 0;
-//		rx_data_gps = 0;
-//	}
-//	HAL_UART_Receive_IT(&huart2, &rx_data_gps, 1);
-//	}
+	if(huart==&huart2){
+	if(rx_data_gps != '\n' && rx_index_gps < RX_BUFFER_SIZE) {
+		rx_buffer_gps[rx_index_gps++] = rx_data_gps;
+	} else {
+		lwgps_process(&gps, rx_buffer_gps, rx_index_gps+1);
+		rx_index_gps = 0;
+		rx_data_gps = 0;
+	}
+	HAL_UART_Receive_IT(&huart2, &rx_data_gps, 1);
+	}
 
 
 	if(huart == &huart3){
@@ -1276,7 +1317,82 @@ void Nextion_SendFloatToTextbox(char* textbox_id, float value) {
     Nextion_SendCommand(command);
 }
 
+void HYI_BUFFER_Fill()
+{
+//	HYI_BUFFER[0] =0xFF;
+//	HYI_BUFFER[1] =0xFF;
+//	HYI_BUFFER[2] =0x54;
+//	HYI_BUFFER[3] =0X52;
+//	HYI_BUFFER[4] =TAKIM_ID;
+//
+//
+//	//HYI_BUFFER[75]= crc; // CRC
+//	HYI_BUFFER[76]= 0x0D;
+//	HYI_BUFFER[77]= 0x0A;
 
+
+	float2unit8 f2u8_hAltitude;
+		 f2u8_hAltitude.fVal=Sustainer.altitude;
+		 for(uint8_t i=0;i<4;i++)
+		 {
+			 HYI_BUFFER[i]=f2u8_hAltitude.array[i];
+		 }
+
+
+		  float2unit8 f2u8_hGpsalt;
+		  f2u8_hGpsalt.fVal=Sustainer.gpsaltitude;
+		  for(uint8_t i=0;i<4;i++)
+		  {
+			 HYI_BUFFER[4+i]=f2u8_hGpsalt.array[i];
+		  }
+
+
+		  float2unit8 f2u8_hGpslat;
+		  f2u8_hGpslat.fVal=Sustainer.gpslatitude;
+		  for(uint8_t i=0;i<4;i++)
+	     {
+	   	  HYI_BUFFER[8+i]=f2u8_hGpslat.array[i];
+	     }
+
+		  float2unit8 f2u8_hGpslong;
+		  f2u8_hGpslong.fVal=Sustainer.gpslongitude;
+		  for(uint8_t i=0;i<4;i++)
+		  {
+		  	HYI_BUFFER[12+i]=f2u8_hGpslong.array[i];
+		  }
+
+		  for(uint8_t i=0;i<40;i++)
+		  {
+		   HYI_BUFFER[16+i]=0;
+		  }
+
+		  float2unit8 f2u8_h_k_Gpsalt;
+		  f2u8_h_k_Gpsalt.fVal=Booster.gpsaltitude;
+		  for(uint8_t i=0;i<4;i++)
+		  {
+			 HYI_BUFFER[56+i]= f2u8_h_k_Gpsalt.array[i];
+		  }
+
+
+		  float2unit8 f2u8_h_k_Gpslat;
+		  f2u8_h_k_Gpslat.fVal=Booster.gpslatitude;
+		  for(uint8_t i=0;i<4;i++)
+	     {
+	   	  HYI_BUFFER[60+i]= f2u8_h_k_Gpslat.array[i];
+	     }
+
+		  float2unit8 f2u8_h_k_Gpslong;
+		  f2u8_h_k_Gpslong.fVal=Booster.gpslongitude;
+		  for(uint8_t i=0;i<4;i++)
+		  {
+		  	HYI_BUFFER[64+i]=f2u8_h_k_Gpslong.array[i];
+		  }
+
+
+		 CDC_Transmit_FS((uint8_t*)HYI_BUFFER,HYI_BUFFER_SIZE);
+
+
+}
 
 void Booster_union_converter(void)
 {
@@ -1284,7 +1400,7 @@ void Booster_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						 f2u8_booster.array[i]=Lora_Rx_Buffer[i+2];
-						 HYI_BUFFER[34+i]=Lora_Rx_Buffer[i+5]; // 34 35 36 37
+						// HYI_BUFFER[34+i]=Lora_Rx_Buffer[i+5]; // 34 35 36 37
 					 }
 					 Booster.gpsaltitude=f2u8_booster.fVal;
 
@@ -1292,14 +1408,14 @@ void Booster_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						 f2u8_booster.array[i]=Lora_Rx_Buffer[i+6];
-						 HYI_BUFFER[38+i]=Lora_Rx_Buffer[i+9]; // 38 39 40 41
+						 //HYI_BUFFER[38+i]=Lora_Rx_Buffer[i+9]; // 38 39 40 41
 					 }
 					 Booster.gpslatitude=f2u8_booster.fVal;
 
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						 f2u8_booster.array[i]=Lora_Rx_Buffer[i+10];
-						 HYI_BUFFER[42+i]=Lora_Rx_Buffer[i+13]; // 42 43 44 45
+						// HYI_BUFFER[42+i]=Lora_Rx_Buffer[i+13]; // 42 43 44 45
 					 }
 					 Booster.gpslongitude=f2u8_booster.fVal;
 
@@ -1367,7 +1483,7 @@ void Sustainer_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						 f2u8_gpsalt.array[i]=Lora_Rx_Buffer[i+2];
-						 HYI_BUFFER[10+i] =Lora_Rx_Buffer[i+5]; // 10 11 12 13
+					//	 HYI_BUFFER[10+i] =Lora_Rx_Buffer[i+5]; // 10 11 12 13
 					 }
 					 Sustainer.gpsaltitude=f2u8_gpsalt.fVal;
 				 float2unit8 f2u8_latitude;
@@ -1375,7 +1491,7 @@ void Sustainer_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						f2u8_latitude.array[i]=Lora_Rx_Buffer[i+6];
-						HYI_BUFFER[14+i] =Lora_Rx_Buffer[i+9]; // 14 15 16 17
+					//	HYI_BUFFER[14+i] =Lora_Rx_Buffer[i+9]; // 14 15 16 17
 					 }
 					 Sustainer.gpslatitude=f2u8_latitude.fVal;
 
@@ -1383,7 +1499,7 @@ void Sustainer_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						f2u8_longitude.array[i]=Lora_Rx_Buffer[i+10];
-						HYI_BUFFER[18+i] =Lora_Rx_Buffer[i+13]; // 18 19 20 21
+					//	HYI_BUFFER[18+i] =Lora_Rx_Buffer[i+13]; // 18 19 20 21
 					 }
 					 Sustainer.gpslongitude=f2u8_longitude.fVal;
 
@@ -1391,7 +1507,7 @@ void Sustainer_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						f2u8_altitude.array[i]=Lora_Rx_Buffer[i+14];
-						HYI_BUFFER[6+i] =Lora_Rx_Buffer[i+17]; // 6 7 8 9
+					//	HYI_BUFFER[6+i] =Lora_Rx_Buffer[i+17]; // 6 7 8 9
 					 }
 					 Sustainer.altitude=f2u8_altitude.fVal;
 
@@ -1414,7 +1530,7 @@ void Sustainer_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						 f2u8_accx.array[i]=Lora_Rx_Buffer[i+26];
-						// HYI_BUFFER[58+i]=Lora_Rx_Buffer[i+29]; //
+					//	 HYI_BUFFER[58+i]=Lora_Rx_Buffer[i+29]; //
 					 }
 					 Sustainer.accx=f2u8_accx.fVal;
 
@@ -1422,7 +1538,7 @@ void Sustainer_union_converter(void)
 					 for(uint8_t i=0;i<4;i++)
 					 {
 						 f2u8_accy.array[i]=Lora_Rx_Buffer[i+30];
-						 //HYI_BUFFER[62+i]=Lora_Rx_Buffer[i+33];
+					//	 HYI_BUFFER[62+i]=Lora_Rx_Buffer[i+33];
 					 }
 					 Sustainer.accy=f2u8_accy.fVal;
 
@@ -1430,7 +1546,7 @@ void Sustainer_union_converter(void)
 				      for(uint8_t i=0;i<4;i++)
 					 {
 				    	  f2u8_accz.array[i]=Lora_Rx_Buffer[i+34];
-				    	//  HYI_BUFFER[66+i]=Lora_Rx_Buffer[i+37];
+				    //	  HYI_BUFFER[66+i]=Lora_Rx_Buffer[i+37];
 					 }
 				      Sustainer.accz=f2u8_accz.fVal;
 
@@ -1455,7 +1571,7 @@ void Payload_union_converter(void)
 			 for(uint8_t i=0;i<4;i++)
 			 {
 				 f2u8.array[i]=Lora_Rx_Buffer[i+2];
-				 HYI_BUFFER[22+i]=Lora_Rx_Buffer[i+5]; // 34 35 36 37
+				// HYI_BUFFER[22+i]=Lora_Rx_Buffer[i+5]; // 34 35 36 37
 			 }
 			 Payload.gpsaltitude=f2u8.fVal;
 
@@ -1463,14 +1579,14 @@ void Payload_union_converter(void)
 			 for(uint8_t i=0;i<4;i++)
 			 {
 				 f2u8.array[i]=Lora_Rx_Buffer[i+6];
-				 HYI_BUFFER[26+i]=Lora_Rx_Buffer[i+9]; // 38 39 40 41
+			//	 HYI_BUFFER[26+i]=Lora_Rx_Buffer[i+9]; // 38 39 40 41
 			 }
 			 Payload.gpslatitude=f2u8.fVal;
 
 			 for(uint8_t i=0;i<4;i++)
 			 {
 				 f2u8.array[i]=Lora_Rx_Buffer[i+10];
-				 HYI_BUFFER[30+i]=Lora_Rx_Buffer[i+13]; // 42 43 44 45
+			//	 HYI_BUFFER[30+i]=Lora_Rx_Buffer[i+13]; // 42 43 44 45
 			 }
 			 Payload.gpslongitude=f2u8.fVal;
 
@@ -1528,6 +1644,40 @@ void Payload_union_converter(void)
 				  f2u8.array[i]=Lora_Rx_Buffer[i+42];
 			 }
 			  Payload.pitch=f2u8.fVal;
+}
+
+
+double distance_in_m(double lat1, double long1, double lat2, double long2) {
+
+
+    double dlat1=lat1*(PI/180);
+
+    double dlong1=long1*(PI/180);
+    double dlat2=lat2*(PI/180);
+    double dlong2=long2*(PI/180);
+
+    double dLong=dlong1-dlong2;
+    double dLat=dlat1-dlat2;
+
+    double aHarv= pow(sin(dLat/2.0),2.0)+cos(dlat1)*cos(dlat2)*pow(sin(dLong/2),2);
+    double cHarv=2*atan2(sqrt(aHarv),sqrt(1.0-aHarv));
+
+    double distance=radius_of_earth*cHarv;
+    return (distance);
+    }
+double toRadians(double degree) {
+    return (degree * PI / 180.0);
+}
+
+double calculateAngle(double lat1, double lon1, double lat2, double lon2){
+    double lat1_rad = toRadians(lat1);
+    double lat2_rad = toRadians(lat2);
+    double delta_lon = toRadians(lon2 - lon1);
+    double y = sin(delta_lon) * cos(lat2_rad);
+    double x = cos(lat1_rad) * sin(lat2_rad) - sin(lat1_rad) * cos(lat2_rad) * cos(delta_lon);
+    double angle_rad = atan2(y, x);
+    double angle_deg = angle_rad * 180.0 / PI;
+    return angle_deg;
 }
 
 
